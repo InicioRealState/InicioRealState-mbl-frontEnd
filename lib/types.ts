@@ -12,7 +12,6 @@ export interface User {
   createdAt: string
 }
 
-// Tipos de propiedad
 export type PropertyType = 'house' | 'apartment' | 'land'
 export type PropertyStatus = 'owned' | 'for_sale' | 'for_rent' | 'rented' | 'available' | 'pending_sale' | 'pending_rent'
 
@@ -29,16 +28,17 @@ export interface Property {
   bedrooms?: number
   bathrooms?: number
   sqMeters: number
+  size: number 
   description?: string
   features?: string[]
   images?: string[]
   ownerId?: string
   agentId?: string
   monthlyRent?: number
+  purchasedWithUs?: boolean 
   createdAt: string
 }
 
-// Tipos de leads
 export type LeadStatus = 'nuevo' | 'contactado' | 'cita_agendada' | 'visitado' | 'negociando' | 'cerrado' | 'descartado'
 
 export interface PropertyLead {
@@ -65,7 +65,6 @@ export interface LeadFollowUp {
   nextActionDate?: string
 }
 
-// Tipos de citas
 export interface Appointment {
   id: string
   propertyId: string
@@ -78,7 +77,6 @@ export interface Appointment {
   createdAt: string
 }
 
-// Tipos de documentos
 export interface Document {
   id: string
   name: string
@@ -88,7 +86,6 @@ export interface Document {
   status: 'pending' | 'approved' | 'rejected'
 }
 
-// Tipos de comisiones
 export interface Commission {
   id: string
   agentId: string
@@ -101,7 +98,47 @@ export interface Commission {
   paidDate?: string
 }
 
-// Tipos de referidos
+// Tipos para Registro y Autenticación
+export interface RegisterRequest {
+  name: string
+  email: string
+  phone: string
+  password: string
+  role: UserRole
+  referralCode?: string
+}
+
+export interface RegisterResponse {
+  success: boolean
+  message: string
+  user?: User
+  token?: string
+  error?: string
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+}
+
+export interface LoginResponse {
+  success: boolean
+  message: string
+  user?: User
+  token?: string
+  error?: string
+}
+
+export interface AuthResponse {
+  success: boolean
+  message: string
+  data?: {
+    user: User
+    token: string
+  }
+  error?: string
+}
+
 export interface Referral {
   id: string
   referrerId: string
@@ -112,7 +149,6 @@ export interface Referral {
   createdDate: string
 }
 
-// Tipos de notificaciones
 export interface Notification {
   id: string
   userId: string
@@ -123,7 +159,6 @@ export interface Notification {
   createdAt: string
 }
 
-// Tipos de registro venta/renta
 export interface SaleRentRegistration {
   id: string
   propertyId: string
@@ -171,4 +206,81 @@ export interface RegistrationDocument {
   url: string
   uploadDate: string
   status: 'pending' | 'approved' | 'rejected'
+}
+
+export interface ActiveRental {
+  id: string
+  propertyId: string
+  tenantId: string
+  landlordId: string
+  agentId: string
+  startDate: string
+  endDate: string
+  monthlyRent: number
+  paymentDay: number
+  depositAmount: number
+  rules: string[]
+  utilities: {
+    electricity: { provider: string; phone: string; accountNumber?: string }
+    water: { provider: string; phone: string; accountNumber?: string }
+    gas: { provider: string; phone: string; accountNumber?: string }
+    internet?: { provider: string; phone: string; accountNumber?: string }
+  }
+  documents: RegistrationDocument[]
+  status: 'active' | 'ending_soon' | 'ended'
+}
+
+export interface Message {
+  id: string
+  conversationId: string
+  senderId: string
+  receiverId: string
+  content: string
+  read: boolean
+  createdAt: string
+}
+
+export interface Conversation {
+  id: string
+  participants: string[]
+  lastMessage?: string
+  lastMessageDate?: string
+  unreadCount: number
+  propertyId?: string
+}
+
+export interface PropertyEarnings {
+  propertyId: string
+  totalEarnings: number
+  monthlyEarnings: number
+  occupancyRate: number
+  lastPaymentDate?: string
+  nextPaymentDate?: string
+  paymentHistory: {
+    month: string
+    amount: number
+    status: 'paid' | 'pending' | 'late'
+  }[]
+}
+
+export type CampaignStatus = 'active' | 'paused' | 'completed' | 'cancelled'
+export type CampaignResult = 'rented' | 'sold' | 'not_achieved' | 'cancelled' | 'pending'
+export type CampaignType = 'rent' | 'sale'
+
+export interface Campaign {
+  id: string
+  propertyId: string
+  ownerId: string
+  type: CampaignType
+  status: CampaignStatus
+  budget: number
+  spentBudget: number
+  remainingBudget: number
+  leadsCount: number
+  startDate: string
+  endDate: string
+  durationDays: number
+  result?: CampaignResult
+  platform: string[]
+  createdAt: string
 }
