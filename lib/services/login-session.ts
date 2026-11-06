@@ -1,0 +1,46 @@
+import { loginUser } from '@/lib/api/endpoints/auth'
+import type { BackendUser } from '@/lib/services/auth-session'
+import type { ApiDebugLogEntry } from '@/lib/api/client'
+
+export type CredentialLoginResult = {
+  user: BackendUser
+  token: string
+  refreshToken: string | null
+}
+
+export async function signInWithCredentials(
+  email: string,
+  password: string,
+  debugLog?: (entry: ApiDebugLogEntry) => void
+): Promise<CredentialLoginResult> {
+  const loginResponse = await loginUser({
+    email,
+    password,
+  }, debugLog)
+
+  const token = loginResponse.accessToken ?? null
+  const refreshToken = loginResponse.refreshToken ?? null
+  const user = loginResponse.user ?? null
+
+  if (!token || !user) {
+    debugLog?.({
+      level: 'error',
+      message: 'El login termino sin una sesion usable. Si hubo HTTP 2xx, el contrato recibido no coincide con lo que espera el frontend (token y usuario); compara ambos antes de atribuir el error.',
+      details: {
+        success: loginResponse.success,
+        message: loginResponse.message,
+        error: loginResponse.error ?? null,
+        hasToken: !!token,
+        hasRefreshToken: !!refreshToken,
+        hasUser: !!user,
+      },
+    })
+    throw new Error(loginResponse.error || 'La API no devolvio un token de sesion')
+  }
+
+  return {
+    user: user as BackendUser,
+    token,
+    refreshToken,
+  }
+}

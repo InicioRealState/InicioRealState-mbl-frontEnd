@@ -1,0 +1,473 @@
+import type { DatePropertyCard } from "@/lib/types";
+import { useMemo, useState, type ReactNode } from "react";
+import {
+  ActivityIndicator,
+  ScrollView,
+  RefreshControl,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
+import { router, useLocalSearchParams } from "expo-router";
+import { BlurView } from "expo-blur";
+import { AppointmentCreateFlow } from "../../main/components/AppointmentCreateFlow";
+import { PropertyLocationMap } from "../components/selectedProperties/PropertyLocationMap";
+import { icons, logos } from "@/assets";
+import { Amenities } from "../components/selectedProperties/AmenitiesButton";
+import { GalleryImages } from "../components/selectedProperties/GalleryImages";
+import { ImagesRoulette } from "../components/selectedProperties/ImagesRoulette";
+import { PropertyImage } from "../components/selectedProperties/PropertyImage";
+import { PropertyCarousel } from "../components/selectedProperties/PropertyCarousel";
+import { PriceCard } from "../components/PriceCard";
+import { styles } from "./styles/selectedProperty.styles";
+import { useSelectedProperty } from "../hooks/useSelectedProperty";
+import { generalColors } from "@/theme";
+import { AppModal } from "@/components/AppModal";
+import { capitalizeFirstLetter } from "../../main/utils/dashboard-formatters";
+
+export const PropertiesList = () => {
+  const params = useLocalSearchParams<{
+    propertyId?: string | string[];
+  }>();
+
+  const normalizeName = (value?: string | null) => {
+    return value?.replace(/wc|rec/gi, "").trim() ?? "";
+  };
+
+  const [isAppointmentVisible, setIsAppointmentVisible] = useState(false);
+
+  const propertyId = Array.isArray(params.propertyId)
+    ? params.propertyId[0]
+    : params.propertyId;
+
+  const { property, isLoading, error, errorCode, isRefreshing, refresh } =
+    useSelectedProperty(propertyId);
+
+  const appointmentProperty = useMemo<DatePropertyCard | undefined>(() => {
+    if (!property || !propertyId) return undefined;
+    const operation = property.operationLabel.trim().toLowerCase();
+    return {
+      id: propertyId,
+      title: property.title,
+      address: property.geoData?.formatAddress || property.zone,
+      listingType:
+        operation === "rent" || operation === "sale" ? operation : undefined,
+    };
+  }, [property, propertyId]);
+
+  const [seeGalleryImage, setSeeGalleryImages] = useState(false);
+  const [descriptionPropertyId, setDescriptionPropertyId] = useState<
+    string | null
+  >(null);
+  const operationLabel =
+    property?.operationLabel.toLowerCase() === "sale"
+      ? "Venta por INICIO Real Estate"
+      : "Renta por INICIO Real Estate";
+
+  const OperationLogo =
+    property?.operationLabel.toLowerCase() === "sale"
+      ? logos.logoMiniSale
+      : logos.logoMiniRent;
+  const markerBackgroundColor =
+    property?.operationLabel.trim().toLowerCase() === "sale"
+      ? generalColors.saleColor
+      : generalColors.rentColor;
+
+  if (isLoading || !property) {
+    return (
+      <View style={styles.propertyStateContainer}>
+        <Pressable
+          style={styles.propertyStateBackButton}
+          onPress={() => router.back()}
+          accessibilityRole="button"
+        >
+          <Text style={styles.propertyStateBackText}>Volver</Text>
+        </Pressable>
+        {isLoading ? (
+          <View style={styles.propertyStateContent}>
+            <ActivityIndicator size="large" color={generalColors.greenTitle} />
+            <Text style={styles.propertyStateMessage}>Cargando propiedad…</Text>
+          </View>
+        ) : (
+          <View style={styles.propertyStateContent} accessibilityRole="alert">
+            <Text style={styles.propertyStateTitle}>
+              No se ha logrado cargar la propiedad
+            </Text>
+            <Text style={styles.propertyStateMessage}>
+              Envíe un mensaje a los desarrolladores encargados.
+            </Text>
+            <Text selectable style={styles.propertyStateCode}>
+              Código de error: {errorCode ?? "PROPERTY_LOAD_FAILED"}
+            </Text>
+            <Text
+              adjustsFontSizeToFit
+              numberOfLines={2}
+              style={styles.propertyStateMessage}
+            >
+              {error || "No se recibieron los datos de la propiedad."}
+            </Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  if (seeGalleryImage && property.images.length > 1) {
+    return (
+      <View style={styles.safeArea}>
+        <GalleryImages
+          images={property.images}
+          onClose={() => setSeeGalleryImages(false)}
+          onFavorite={() => {}}
+          onShare={() => {}}
+        />
+      </View>
+    );
+  }
+
+  const description =
+    property.description?.trim() ||
+    "No hay una descripcion para esta propiedad";
+
+  const firstPeriod = description.indexOf(".");
+
+  const descriptionPreview =
+    firstPeriod === -1 ? description : description.slice(0, firstPeriod + 1);
+
+  const hasMoreDescription =
+    description.slice(descriptionPreview.length).trim().length > 0;
+
+  const [longitude, latitude] = property.geoData?.locations?.coordinates ?? [];
+
+  const hasValidCoordinates =
+    property.geoData?.locations?.type === "Point" &&
+    typeof latitude === "number" &&
+    Number.isFinite(latitude) &&
+    typeof longitude === "number" &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180;
+
+  return (
+    <View style={styles.safeArea}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.propertyListContent}
+        refreshControl={
+          <RefreshControl refreshing={isRefreshing} onRefresh={refresh} />
+        }
+      >
+        <ImagesRoulette
+          onBack={() => router.back()}
+          onFavorite={() => {}}
+          onShare={() => {}}
+          onOpenGallery={() => {
+            if (property.images.length > 1) setSeeGalleryImages(true);
+          }}
+          images={property.previewImages}
+          status={property?.status}
+        />
+        <View style={styles.container}>
+          <View style={styles.operationContainer}>
+            <View style={styles.operationIcon}>
+              <OperationLogo width={45} height={45} />
+            </View>
+            <Text
+              adjustsFontSizeToFit
+              numberOfLines={1}
+              style={styles.operationText}
+            >
+              {operationLabel}
+            </Text>
+            <icons.SealChek height={25} width={25} />
+          </View>
+
+          <View style={styles.propertyInformation}>
+            <Text style={styles.propertyTitle}>{property?.title}</Text>
+            <View style={styles.propertyAddressView}>
+              <View style={styles.propertyAddress}>
+                <icons.Place height={20} width={20} />
+                <Text style={styles.addressText} numberOfLines={2}>
+                  {property?.zone}
+                </Text>
+              </View>
+              {property.view ? (
+                <View style={styles.propertyView}>
+                  <icons.Place width={15} height={15} />
+                  <Text
+                    style={styles.viewText}
+                    adjustsFontSizeToFit
+                    numberOfLines={1}
+                  >
+                    {property?.view}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+
+          {/** Aqui comienza el espacio de los objetos de la propiedad */}
+          <View style={styles.shadowsContainer}>
+            <View
+              style={[
+                styles.propertyFeaturesContainer,
+                property.bedrooms.extra
+                  ? {
+                      flexWrap: "wrap",
+                    }
+                  : null,
+              ]}
+            >
+              {property?.bedrooms.principal ? (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  <PropertyMetric
+                    icon={<icons.Bed width={25} height={25} />}
+                    value={normalizeName(property?.bedrooms.principal)}
+                    label="Recámaras"
+                  />
+
+                  {property.bedrooms.extra ? (
+                    <>
+                      <View
+                        style={{
+                          paddingRight: 5,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 20,
+                            textAlign: "center",
+                          }}
+                        >
+                          +
+                        </Text>
+                      </View>
+                      <PropertyMetric
+                        icon={
+                          <icons.Balcony
+                            width={25}
+                            height={25}
+                            strokeWidth={2}
+                          />
+                        }
+                        value={capitalizeFirstLetter(
+                          normalizeName(property.bedrooms.extra),
+                        )}
+                        label={capitalizeFirstLetter(
+                          normalizeName(property.bedrooms.extraName),
+                        )}
+                      />
+                    </>
+                  ) : null}
+                </View>
+              ) : null}
+              {property?.bathrooms ? (
+                <PropertyMetric
+                  icon={<icons.Bathroom width={25} height={25} />}
+                  value={normalizeName(property?.bathrooms)}
+                  label="Baños"
+                />
+              ) : null}
+              {property?.parking ? (
+                <>
+                  <PropertyMetric
+                    icon={<icons.Car width={25} height={25} />}
+                    value={property?.parking}
+                    label="Parkings"
+                  />
+                </>
+              ) : null}
+              {property.propertyAmenities ? (
+                <View style={styles.moreFeaturesContainer}>
+                  <icons.ArmChairSe />
+                  <Text
+                    adjustsFontSizeToFit
+                    numberOfLines={2}
+                    style={styles.moreFeaturesText}
+                  >
+                    {property?.propertyAmenities}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+
+          <View style={styles.detailsContainer}>
+            <Text style={styles.detailsTitle}>Detalles de la propiedad</Text>
+            <Text style={styles.detailsInformation}>{descriptionPreview}</Text>
+            {hasMoreDescription && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Mostrar toda la descripción de la propiedad"
+                onPress={() => setDescriptionPropertyId(propertyId ?? null)}
+                style={styles.descriptionAction}
+              >
+                <Text style={styles.descriptionActionText}>Mostrar todo</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+        {property.equipmentServices.length > 0 && (
+          <PropertySection title="Amenidades">
+            <Amenities amenitiesData={property.equipmentServices} />
+          </PropertySection>
+        )}
+        <Line />
+        {property.rooms.length > 0 && (
+          <PropertySection title="Donde vas a vivir">
+            <PropertyCarousel
+              key={`rooms-${propertyId}`}
+              items={property.rooms}
+            />
+          </PropertySection>
+        )}
+        {property.amenitiesImages.length > 0 && (
+          <PropertySection title="Amenidades">
+            <PropertyCarousel
+              key={`amenities-${propertyId}`}
+              items={property.amenitiesImages}
+            />
+          </PropertySection>
+        )}
+        <PropertySection title="Dónde vas a estar">
+          <View style={styles.mapPrincipalContainer}>
+            <View style={styles.mapShadowContainer}>
+              {hasValidCoordinates ? (
+                <PropertyLocationMap
+                  key={propertyId}
+                  latitude={latitude}
+                  longitude={longitude}
+                  markerColor={markerBackgroundColor}
+                />
+              ) : (
+                <Text>Ubicación no disponible</Text>
+              )}
+            </View>
+            <View style={styles.mapTextAdviseContainer}>
+              <icons.Lock />
+              <Text
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                style={styles.mapText}
+              >
+                La ubicación exacta se comparte al confirmar la visita
+              </Text>
+            </View>
+          </View>
+        </PropertySection>
+      </ScrollView>
+      <BlurView
+        intensity={12}
+        tint="light"
+        blurMethod="dimezisBlurView"
+        style={styles.priceSection}
+      >
+        <PriceCard
+          onDate={() => {
+            setIsAppointmentVisible(true);
+          }}
+          price={property?.price}
+          operation={property?.operationLabel}
+          hasMantain={property?.hasMantenimiento}
+        />
+      </BlurView>
+      <AppModal
+        visible={Boolean(propertyId && descriptionPropertyId === propertyId)}
+        onClose={() => setDescriptionPropertyId(null)}
+        title="Detalles de la propiedad"
+        showCloseButton
+        scrollable
+        size="large"
+      >
+        <Text
+          selectable
+          style={[styles.detailsInformation, styles.descriptionModalText]}
+        >
+          {description}
+        </Text>
+      </AppModal>
+      {isAppointmentVisible && (
+        <AppointmentCreateFlow
+          visible
+          onClose={() => {
+            setIsAppointmentVisible(false);
+          }}
+          initialProperty={appointmentProperty}
+          lockAppointmentType
+        />
+      )}
+    </View>
+  );
+};
+
+function PropertySection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <View style={[styles.sectionContainer, styles.listSection]}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function Line() {
+  return (
+    <View
+      style={{
+        flex: 1,
+        paddingHorizontal: 25,
+        paddingTop: 12,
+      }}
+    >
+      <View
+        style={{
+          borderBottomWidth: 0.7,
+          width: "100%",
+          borderColor: "#0505051f",
+        }}
+      ></View>
+    </View>
+  );
+}
+
+function PropertyMetric({
+  icon,
+  value,
+  label,
+}: {
+  icon: ReactNode;
+  value: string | number | undefined | null;
+  label: string;
+}) {
+  return (
+    <View style={styles.propertyMetricContainer}>
+      <View style={styles.propertyMetricHead}>
+        {icon}
+        <Text
+          adjustsFontSizeToFit
+          numberOfLines={1}
+          style={styles.metricNumber}
+        >
+          {value}
+        </Text>
+      </View>
+      <Text adjustsFontSizeToFit numberOfLines={1} style={styles.metricText}>
+        {label}
+      </Text>
+    </View>
+  );
+}

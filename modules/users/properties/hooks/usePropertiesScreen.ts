@@ -1,0 +1,614 @@
+import type { Filters } from "@/lib/api/endpoints/catalog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, InteractionManager, useWindowDimensions } from "react-native";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import {
+  createAndOpenSinglePropertyPdf,
+  createAndOpenTemporaryPropertyListPdf,
+  type PdfReportAgentName,
+} from "@/lib/api";
+import type { ListingProperty, Property } from "@/lib/types";
+import { useAuth } from "@/contexts/AuthContext";
+import { usePropertyDomain } from "@/contexts/auth/use-property-domain";
+import { useOperationMode } from "@/modules/settings";
+import { getSelectedProperty } from "../services/properties.service";
+
+export type ListingFilter = "all" | "rent" | "sale" | "developments";
+export const FURNISHING_FILTER_OPTIONS = [
+  "all",
+  "Totalmente equipada",
+  "Semiequipada",
+  "Sin Muebles",
+  "COCINA INTEGRAL",
+  "Sin equipar",
+] as const;
+export type FurnishingFilter = (typeof FURNISHING_FILTER_OPTIONS)[number];
+export type SortOption =
+  | "desc"
+  | "asc"
+  | "rent_under_10"
+  | "rent_under_20"
+  | "rent_over_20";
+
+export const PDF_AGENTS: PdfReportAgentName[] = [
+  "AlexaDiaz",
+  "JoseAntonio",
+  "CitlalliTapia",
+  "JorgeSanchez",
+  "VictorPerea",
+  "HectorEspinoza",
+  "CarlosTrujeque",
+  "MatteoAguilar",
+  "EdgarZavala",
+  "DiegoLedezma",
+  "DanielaVillanueva",
+];
+
+export const PDF_AGENT_LABELS: Record<PdfReportAgentName, string> = {
+  AlexaDiaz: "Alexa Diaz",
+  JoseAntonio: "Jose Antonio",
+  CitlalliTapia: "Citlalli Tapia",
+  JorgeSanchez: "Jorge Sanchez",
+  VictorPerea: "Victor Perea",
+  HectorEspinoza: "Hector Espinoza",
+  CarlosTrujeque: "Carlos Trujeque",
+  MatteoAguilar: "Matteo Aguilar",
+  EdgarZavala: "Edgar Zavala",
+  DiegoLedezma: "Diego Ledezma",
+  DanielaVillanueva: "Daniela Villanueva",
+};
+
+const normalizeText = (value: string) => value.trim().toLowerCase();
+const parsePrice = (value: string) => {
+  const price = Number(value.replace(/[^\d.]/g, ""));
+  return Number.isFinite(price) && price > 0 ? price : null;
+};
+const isDisplayValue = (value?: string | null) =>
+  Boolean(value?.trim()) &&
+  !/^(sin dato|sin datos|sin tipo|sin vista|sin link|sin carpeta|sin descripcion|n\/a|na|null|undefined)$/i.test(
+    value!.trim(),
+  );
+
+function mapProperty(property: Property): ListingProperty {
+  const amenities = property.amenities?.length
+    ? property.amenities
+    : (property.features ?? []);
+  const parkingMatch = amenities
+    .find((value) => /estac|parking|auto/i.test(value))
+    ?.match(/\d+/);
+  const parking = property.parking ?? Number(parkingMatch?.[0] ?? 2);
+  return {
+    id: property.id || property._id || property.title,
+    title: property.title || "Propiedad disponible",
+    code: property.address || property.city || "Inventario de renta",
+    city: property.city || "Zona sin asignar",
+    price: property.monthlyRent ?? property.price ?? 0,
+    priceLabel: property.priceLabel,
+    listingType: property.listingType,
+    view: property.view,
+    description: property.description,
+    solarPanelLabel: property.solarPanelLabel,
+    propertyType: property.type,
+    googleDriveImages: property.googleDriveImages,
+    locationUrl: property.locationUrl,
+    geoData: property.geoData,
+    bedrooms: String(property.bedrooms ?? 0),
+    bedroomsCount: property.bedrooms ?? 0,
+    bathrooms: String(property.bathrooms ?? 0),
+    bathroomsCount: property.bathrooms ?? 0,
+    parking: String(parking),
+    parkingCount: parking,
+    isFurnished:
+      property.isFurnished ?? amenities.some((value) => /amuebl/i.test(value)),
+    furnishedLabel: property.furnishedLabel,
+    isLand: property.type === "land",
+    image: property.images?.[0],
+    tags: amenities.filter(isDisplayValue).slice(0, 6),
+    status: property.status,
+    propertyDescription: property.propertyDescription,
+    titlePropertie: property.titlePropertie,
+  };
+}
+
+export function getSortLabel(option: SortOption) {
+  if (option === "asc") return "Menor a mayor";
+  {/*if (option === "rent_under_10") return "Rentas menores de 10";
+  if (option === "rent_under_20") return "Rentas menores de 20";
+  if (option === "rent_over_20") return "Rentas mayores de 20";*/}
+  return "Mayor a menor";
+}
+
+export function usePropertiesScreen() {
+  const propertyNavigationLocked = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      propertyNavigationLocked.current = false;
+      return () => {
+        propertyNavigationLocked.current = true;
+      };
+    }, []),
+  );
+
+  const params = useLocalSearchParams<{ type?: string }>();
+  const { authToken, currentUser, isLoading: isAuthLoading } = useAuth();
+  const { operationMode } = useOperationMode();
+  const { width } = useWindowDimensions();
+  const domain = usePropertyDomain();
+  const initialFilter: ListingFilter =
+    params.type === "sale" || params.type === "rent"
+      ? params.type
+      : operationMode === "both"
+        ? "rent"
+        : operationMode;
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isMapMode, setIsMapMode] = useState(false);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isPdfCleanupMode, setIsPdfCleanupMode] = useState(false);
+  const [isSelectingProperties, setIsSelectingProperties] = useState(false);
+  const [selectedPropertyIds, setSelectedPropertyIds] = useState<string[]>([]);
+  const [activePropertyId, setActivePropertyId] = useState<string | null>(null);
+  const [isPdfOptionsVisible, setIsPdfOptionsVisible] = useState(false);
+  const [pdfAgentName, setPdfAgentName] =
+    useState<PdfReportAgentName>("AlexaDiaz");
+  const [listingFilter, setListingFilter] =
+    useState<ListingFilter>(initialFilter);
+  const [isFiltersVisible, updateFiltersVisible] = useState(false);
+  const [isSortVisible, setIsSortVisible] = useState(false);
+  const [zoneFilter, setZoneFilter] = useState("");
+  const [minPriceFilter, setMinPriceFilter] = useState("");
+  const [maxPriceFilter, setMaxPriceFilter] = useState("");
+  const [bedroomsFilter, setBedroomsFilter] = useState<number | null>(null);
+  const [bathroomsFilter, setBathroomsFilter] = useState<number | null>(null);
+  const [parkingFilter, setParkingFilter] = useState<number | null>(null);
+  const [furnishingFilter, setFurnishingFilter] =
+    useState<FurnishingFilter>("all");
+  const [sortOption, setSortOption] = useState<SortOption>("asc");
+  const [isApplyingFilters, setIsApplyingFilters] = useState(false);
+  const [filterError, setFilterError] = useState<string | null>(null);
+  const filterRequestId = useRef(0);
+  const [appliedFilters, setAppliedFilters] = useState({
+    zone: domain.catalogFilters?.zone ?? "",
+    furnishing:
+      FURNISHING_FILTER_OPTIONS.find(
+        (value) => value === domain.catalogFilters?.equiped,
+      ) ?? "all",
+    min: "",
+    max: "",
+    bedrooms: null as number | null,
+    bathrooms: null as number | null,
+    parking: null as number | null,
+  });
+  useEffect(() => {
+    filterRequestId.current += 1;
+    setIsApplyingFilters(false);
+    setFilterError(null);
+  }, [authToken]);
+  useEffect(
+    () => () => {
+      filterRequestId.current += 1;
+    },
+    [],
+  );
+
+  const setIsFiltersVisible = (visible: boolean) => {
+    if (isApplyingFilters) return;
+    if (visible) {
+      setZoneFilter(appliedFilters.zone);
+      setFurnishingFilter(appliedFilters.furnishing);
+      setMinPriceFilter(appliedFilters.min);
+      setMaxPriceFilter(appliedFilters.max);
+      setBedroomsFilter(appliedFilters.bedrooms);
+      setBathroomsFilter(appliedFilters.bathrooms);
+      setParkingFilter(appliedFilters.parking);
+    } else {
+      filterRequestId.current += 1;
+      setIsApplyingFilters(false);
+    }
+    setFilterError(null);
+    updateFiltersVisible(visible);
+  };
+
+  const buildCatalogFilters = useCallback((values: typeof appliedFilters): Filters => ({
+    list: listingFilter === "rent" || listingFilter === "sale" ? listingFilter : undefined,
+    zone: values.zone || undefined,
+    equiped: values.furnishing === "all" ? undefined : values.furnishing,
+    bedrooms: values.bedrooms ?? undefined,
+    bathRooms: values.bathrooms ?? undefined,
+    parkings: values.parking ?? undefined,
+    limit: 10,
+    order: sortOption,
+  }), [listingFilter, sortOption]);
+  const catalogRequestFilters = useMemo(() => buildCatalogFilters(appliedFilters),
+    [buildCatalogFilters, appliedFilters]);
+
+  const applyFilters = async () => {
+    if (!authToken || isApplyingFilters) {
+      return;
+    }
+    const requestId = ++filterRequestId.current;
+    setIsApplyingFilters(true);
+    setFilterError(null);
+    if (isMapMode) {
+      setAppliedFilters((previous) => ({
+        ...previous,
+        zone: zoneFilter,
+        furnishing: furnishingFilter,
+        bathrooms: bathroomsFilter,
+        bedrooms: bedroomsFilter,
+        parking: parkingFilter,
+      }));
+      updateFiltersVisible(false);
+      setIsApplyingFilters(false);
+      return;
+    }
+    try {
+      const loaded = await domain.loadCatalogProperties(
+        buildCatalogFilters({
+          zone: zoneFilter, furnishing: furnishingFilter,
+          min: minPriceFilter, max: maxPriceFilter,
+          bedrooms: bedroomsFilter, bathrooms: bathroomsFilter, parking: parkingFilter,
+        }),
+        true,
+      );
+      if (!loaded) {
+        if (requestId === filterRequestId.current)
+          setFilterError(
+            "No se pudieron aplicar los filtros. Intenta nuevamente.",
+          );
+        return;
+      }
+      if (requestId !== filterRequestId.current) {
+        return;
+      }
+      setAppliedFilters({
+        zone: zoneFilter,
+        furnishing: furnishingFilter,
+        min: minPriceFilter,
+        max: maxPriceFilter,
+        bedrooms: bedroomsFilter,
+        bathrooms: bathroomsFilter,
+        parking: parkingFilter,
+      });
+      setSelectedPropertyIds([]);
+      updateFiltersVisible(false);
+    } catch (error) {
+      if (requestId === filterRequestId.current)
+        setFilterError(
+          "No se pudieron aplicar los filtros. Intenta nuevamente.",
+        );
+    } finally {
+      if (requestId === filterRequestId.current) setIsApplyingFilters(false);
+    }
+  };
+
+
+  useEffect(
+    () =>
+      setListingFilter(
+        params.type === "sale" || params.type === "rent"
+          ? params.type
+          : operationMode === "both"
+            ? "rent"
+            : operationMode,
+      ),
+    [operationMode, params.type],
+  );
+
+  const { loadCatalogProperties } = domain;
+  const retryCatalog = () => domain.catalogError
+    ? domain.retryCatalogPage()
+    : loadCatalogProperties(catalogRequestFilters, true);
+  useFocusEffect(useCallback(() => {
+    if (!authToken || isAuthLoading || isMapMode) return;
+    void loadCatalogProperties(catalogRequestFilters);
+  }, [authToken, isAuthLoading, isMapMode, catalogRequestFilters, loadCatalogProperties]));
+
+  const findCatalogProperty = useCallback(
+    (id?: string, backendId?: string) => {
+      const matches = (property: Property) =>
+        Boolean(id && (property.id === id || property._id === id)) ||
+        Boolean(
+          backendId &&
+          (property.id === backendId || property._id === backendId),
+        );
+      const property =
+        domain.catalogProperties.find(matches) ??
+        domain.availableProperties.find(matches);
+      return property ? mapProperty(property) : null;
+    },
+    [domain.catalogProperties, domain.availableProperties],
+  );
+
+  const listings = useMemo(
+    () =>
+      domain.catalogProperties
+        .filter((property) => {
+          if (!property.title?.trim()) return false;
+          const sale =
+            property.status === "for_sale" ||
+            property.status === "pending_sale";
+          const rent =
+            property.status === "for_rent" ||
+            property.status === "pending_rent" ||
+            Boolean(property.monthlyRent);
+          return listingFilter === "sale"
+            ? sale
+            : listingFilter === "rent"
+              ? rent
+              : sale || rent;
+        })
+        .map(mapProperty),
+    [domain.catalogProperties, listingFilter],
+  );
+
+  const filteredListings = useMemo(() => {
+    const query = normalizeText(searchQuery);
+    const min = parsePrice(appliedFilters.min),
+      max = parsePrice(appliedFilters.max);
+
+    return listings.filter((property) => {
+      const searchable =
+        `${property.title} ${property.code} ${property.city}`.toLowerCase();
+      return (
+        (!query || searchable.includes(query)) &&
+        (min === null || property.price >= min) &&
+        (max === null || property.price <= max)
+      );
+    });
+  }, [appliedFilters.min, appliedFilters.max, listings, searchQuery]);
+
+  const activeAdvancedFilterCount = useMemo(
+    () =>
+      [
+        zoneFilter.trim(),
+        minPriceFilter.trim(),
+        maxPriceFilter.trim(),
+        bedroomsFilter,
+        bathroomsFilter,
+        parkingFilter,
+        furnishingFilter !== "all" ? furnishingFilter : null,
+      ].filter(Boolean).length,
+    [
+      bathroomsFilter,
+      bedroomsFilter,
+      furnishingFilter,
+      maxPriceFilter,
+      minPriceFilter,
+      parkingFilter,
+      zoneFilter,
+    ],
+  );
+
+  const availableSortOptions = useMemo<SortOption[]>(
+    () =>
+      listingFilter === "rent"
+        ? ["asc", "desc"]
+        : ["asc", "desc"],
+        
+    [listingFilter],
+  );
+
+  {/**
+    In the future this will work to a new type of sort
+
+    
+    ? ["desc", "asc", "rent_under_10", "rent_under_20", "rent_over_20"]
+        : ["desc", "asc"], 
+  */}
+
+  useEffect(() => {
+    if (!availableSortOptions.includes(sortOption)) setSortOption("asc");
+  }, [availableSortOptions, sortOption]);
+
+  const resetAdvancedFilters = useCallback(() => {
+    setZoneFilter("");
+    setMinPriceFilter("");
+    setMaxPriceFilter("");
+    setBedroomsFilter(null);
+    setBathroomsFilter(null);
+    setParkingFilter(null);
+    setFurnishingFilter("all");
+  }, []);
+
+  const togglePropertySelection = useCallback(
+    (id: string) =>
+      setSelectedPropertyIds((ids) =>
+        ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id],
+      ),
+    [],
+  );
+  const keyExtractor = useCallback(
+    (property: ListingProperty) => property.id,
+    [],
+  );
+  const openPdfOptions = useCallback(() => {
+    if (!isGeneratingPdf) setIsPdfOptionsVisible(true);
+  }, [isGeneratingPdf]);
+  const handleToggleSelectionMode = useCallback(
+    () => setIsSelectingProperties((value) => !value),
+    [],
+  );
+  const handlePropertyPress = useCallback((propertyId: string) => {
+    if (!propertyId || propertyNavigationLocked.current) return;
+    propertyNavigationLocked.current = true;
+    try {
+      router.push({
+        pathname: "/selected-property",
+        params: { propertyId },
+      });
+    } catch (error) {
+      propertyNavigationLocked.current = false;
+      throw error;
+    }
+  }, []);
+
+  const handleGenerateSinglePdf = useCallback(
+    async (propertyId?: string | null) => {
+      const resolvedPropertyId =
+        propertyId ?? selectedPropertyIds[0] ?? activePropertyId;
+      if (!resolvedPropertyId || isGeneratingPdf) return;
+
+      setIsGeneratingPdf(true);
+      setIsPdfCleanupMode(true);
+
+      try {
+        await createAndOpenSinglePropertyPdf(authToken, {
+          design: "modern",
+          propertyId: resolvedPropertyId,
+          list: listingFilter === "sale" ? "sale" : "rent",
+          sales: listingFilter === "sale",
+        });
+        Alert.alert("PDF descargado", "El PDF se ha descargado.");
+      } catch (error: any) {
+        Alert.alert(
+          "No se pudo descargar y abrir el PDF",
+          error?.message || "Revisa la conexion con PDF Reports.",
+        );
+      } finally {
+        setIsPdfCleanupMode(false);
+        setIsGeneratingPdf(false);
+      }
+    },
+    [
+      activePropertyId,
+      authToken,
+      isGeneratingPdf,
+      listingFilter,
+      selectedPropertyIds,
+    ],
+  );
+
+  const handleGeneratePdf = useCallback(async () => {
+    if (isGeneratingPdf) return;
+    setIsPdfOptionsVisible(false);
+    setIsGeneratingPdf(true);
+    setIsPdfCleanupMode(true);
+    setSearchQuery("");
+    setIsMapMode(false);
+
+    const list = listingFilter === "sale" ? "sale" : "rent";
+
+    try {
+      await new Promise<void>((resolve) =>
+        InteractionManager.runAfterInteractions(() => setTimeout(resolve, 120)),
+      );
+      const payload = {
+        ...(currentUser?.agentPresentationKey
+          ? {
+              agentName: "a" as const,
+              agentPresentation: currentUser.agentPresentationKey,
+            }
+          : { agentName: pdfAgentName }),
+        sales: listingFilter === "sale",
+        items: selectedPropertyIds,
+        action: selectedPropertyIds.length ? "SelectProperties" : list,
+        location: "TODAS",
+        list,
+        design: "modern",
+      } as const;
+
+      await createAndOpenTemporaryPropertyListPdf(authToken, payload);
+      Alert.alert("PDF descargado", "El PDF se ha descargado.");
+      setIsSelectingProperties(false);
+      setIsPdfCleanupMode(false);
+    } catch (error: any) {
+      setIsPdfCleanupMode(false);
+      Alert.alert(
+        "No se pudo descargar y abrir el PDF",
+        error?.message || "Revisa la conexion con PDF Reports.",
+      );
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  }, [
+    authToken,
+    currentUser?.agentPresentationKey,
+    isGeneratingPdf,
+    listingFilter,
+    pdfAgentName,
+    selectedPropertyIds,
+  ]);
+
+  const handleGenerateSelectedPdf = useCallback(async () => {
+    if (selectedPropertyIds.length === 1) {
+      await handleGenerateSinglePdf(selectedPropertyIds[0]);
+      return;
+    }
+
+    await handleGeneratePdf();
+  }, [handleGeneratePdf, handleGenerateSinglePdf, selectedPropertyIds]);
+
+  return {
+    mapFilters: {
+      list:
+        listingFilter === "rent" || listingFilter === "sale"
+          ? listingFilter
+          : undefined,
+      zone: appliedFilters.zone || undefined,
+      equiped:
+        appliedFilters.furnishing === "all"
+          ? undefined
+          : appliedFilters.furnishing,
+      bathrooms: appliedFilters.bathrooms ?? undefined,
+      bedrooms: appliedFilters.bedrooms ?? undefined,
+      parkings: appliedFilters.parking ?? undefined,
+    },
+    retryCatalog,
+    loadMoreCatalogProperties: domain.loadMoreCatalogProperties,
+    hasMoreCatalog: domain.hasMoreCatalog,
+    applyFilters,
+    isApplyingFilters,
+    filterError,
+    operationMode,
+    canvasWidth: Math.min(width, 440),
+    filteredListings,
+    findCatalogProperty,
+    keyExtractor,
+    shouldSkipPdfAgentList: Boolean(currentUser?.agentPresentationKey),
+    searchQuery,
+    setSearchQuery,
+    isMapMode,
+    setIsMapMode,
+    isGeneratingPdf,
+    isPdfCleanupMode,
+    isSelectingProperties,
+    selectedPropertyIds,
+    isPdfOptionsVisible,
+    setIsPdfOptionsVisible,
+    pdfAgentName,
+    setPdfAgentName,
+    listingFilter,
+    setListingFilter,
+    isFiltersVisible,
+    setIsFiltersVisible,
+    isSortVisible,
+    setIsSortVisible,
+    zoneFilter,
+    setZoneFilter,
+    minPriceFilter,
+    setMinPriceFilter,
+    maxPriceFilter,
+    setMaxPriceFilter,
+    bedroomsFilter,
+    setBedroomsFilter,
+    bathroomsFilter,
+    setBathroomsFilter,
+    parkingFilter,
+    setParkingFilter,
+    furnishingFilter,
+    setFurnishingFilter,
+    sortOption,
+    setSortOption,
+    activeAdvancedFilterCount,
+    availableSortOptions,
+    resetAdvancedFilters,
+    togglePropertySelection,
+    activePropertyId,
+    handlePropertyPress,
+    handleGenerateSinglePdf,
+    handleGenerateSelectedPdf,
+    openPdfOptions,
+    handleToggleSelectionMode,
+    handleGeneratePdf,
+  };
+}
